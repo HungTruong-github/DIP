@@ -43,9 +43,11 @@ INPUT_VIDEOS = [
 ]
 
 # Cac moc frame mau cach nhau toi thieu 3 giay (>90 frames) phuc vu trich xuat anh bao cao
+# Video 1: 9 moc khung hinh tuong ung 9 gia long mon / vi tri cot chua du 21 bien bao
+# Video 2: 5 moc khung hinh bao trum toan bo 3 bien bao
 REPORT_SAMPLE_FRAMES = {
-    "video1.mp4": [227, 540, 810, 1260, 1980],
-    "video2.mp4": [60, 630, 1200, 1320, 1860]
+    "video1.mp4": [227, 540, 810, 1030, 1260, 1400, 1700, 1980, 2720],
+    "video2.mp4": [60, 150, 500, 630, 1860]
 }
 
 # ==============================================================================
@@ -109,8 +111,13 @@ def detect_circular_traffic_signs(frame):
             if by < 65 or (by + bh) > 465:
                 continue
                 
-            # Loc tang lau cao oc phia ben phai (cac bien bao ben phai deu nam o by >= 230)
-            if bx > 1200 and by < 230:
+            # Loc tang lau cao oc phia ben phai (cac bien bao ben phai deu nam o by >= 220)
+            if bx > 1100 and by < 220:
+                continue
+                
+            # O sat mep phai x > 1350, bien bao that deu o rat gan xe (kich thuoc >= 30)
+            # Loai bo tat ca cac cua so, ban cong, tan la nho o x > 1350
+            if bx > 1350 and (bw < 30 or bh < 30):
                 continue
                 
             # Loc kich thuoc vat the
@@ -149,57 +156,72 @@ def detect_circular_traffic_signs(frame):
             if extent > 0.88:
                 continue
                 
-            # Kiem tra do tron thuc su: tat ca 24 bien bao chuan deu thoa man hull_circ >= 0.90
-            if fit_circle >= 0.62 and hull_circ >= 0.90:
-                rx = int(radius)
-                icx = int(cx)
-                icy = int(cy)
-                x_min = max(0, icx - rx)
-                x_max = min(w_img, icx + rx + 1)
-                y_min = max(0, icy - rx)
-                y_max = min(h_img, icy + rx + 1)
+            # Kiem tra do tron thuc su
+            if not (fit_circle >= 0.60 and hull_circ >= 0.88):
+                continue
                 
-                sub_mask = mask[y_min:y_max, x_min:x_max]
-                
-                # 6. Kiem tra vanh khuyen (Annulus Ring Color Verification)
-                ring = np.zeros(sub_mask.shape, dtype=np.uint8)
-                cv2.circle(ring, (icx - x_min, icy - y_min), rx, 255, -1)
-                cv2.circle(ring, (icx - x_min, icy - y_min), int(0.60 * rx), 0, -1)
-                
-                ring_pixels = cv2.countNonZero(ring)
-                if ring_pixels == 0:
+            rx = int(radius)
+            icx = int(cx)
+            icy = int(cy)
+            x_min = max(0, icx - rx)
+            x_max = min(w_img, icx + rx + 1)
+            y_min = max(0, icy - rx)
+            y_max = min(h_img, icy + rx + 1)
+            
+            sub_mask = mask[y_min:y_max, x_min:x_max]
+            
+            # 6. Kiem tra vanh khuyen (Annulus Ring Color Verification)
+            ring = np.zeros(sub_mask.shape, dtype=np.uint8)
+            cv2.circle(ring, (icx - x_min, icy - y_min), rx, 255, -1)
+            cv2.circle(ring, (icx - x_min, icy - y_min), int(0.60 * rx), 0, -1)
+            
+            ring_pixels = cv2.countNonZero(ring)
+            if ring_pixels == 0:
+                continue
+            ring_color_ratio = cv2.countNonZero(cv2.bitwise_and(sub_mask, ring)) / float(ring_pixels)
+            if ring_color_ratio < 0.22:
+                continue
+            
+            # 7. Phan biet noi dung mau sac ben trong (Internal Content Discrimination)
+            tot_crop = float(bw * bh)
+            crop_hsv = hsv[by:by+bh, bx:bx+bw]
+            
+            # Kiem tra do bao hoa mau (Saturation)
+            max_s = np.max(crop_hsv[:, :, 1])
+            mean_s = np.mean(crop_hsv[:, :, 1])
+            
+            if color_name == 'BLUE':
+                if max_s < 155 or mean_s < 88:
                     continue
-                ring_color_ratio = cv2.countNonZero(cv2.bitwise_and(sub_mask, ring)) / float(ring_pixels)
-                if ring_color_ratio < 0.22:
+            if color_name == 'RED':
+                if max_s < 145:
                     continue
-                
-                # 7. Phan biet noi dung mau sac ben trong (Internal Content Discrimination)
-                tot_crop = float(bw * bh)
-                crop_hsv = hsv[by:by+bh, bx:bx+bw]
-                crop_r1 = cv2.inRange(crop_hsv, lower_red1, upper_red1)
-                crop_r2 = cv2.inRange(crop_hsv, lower_red2, upper_red2)
-                crop_rmask = cv2.bitwise_or(crop_r1, crop_r2)
-                crop_bmask = cv2.inRange(crop_hsv, lower_blue, upper_blue)
-                crop_white = ((crop_hsv[:, :, 1] < 70) & (crop_hsv[:, :, 2] > 120)).astype(np.uint8) * 255
-                crop_arrow = ((crop_hsv[:, :, 1] < 140) & (crop_hsv[:, :, 2] > 165)).astype(np.uint8) * 255
-                
-                r_red = cv2.countNonZero(crop_rmask) / tot_crop
-                r_blue = cv2.countNonZero(crop_bmask) / tot_crop
-                r_white = cv2.countNonZero(crop_white) / tot_crop
-                r_arrow = cv2.countNonZero(crop_arrow) / tot_crop
-                
-                if color_name == 'RED':
-                    # Loai bo den tin hieu giao thong va dong ho dem giay
-                    if r_red > 0.68 and r_white < 0.10:
-                        continue
-                    if r_white < 0.04 and r_blue < 0.10:
-                        continue
-                else: # BLUE
-                    # Bien bao hieu lenh R.302b co mui ten trang, bien P.131 co gach cheo do
-                    if radius >= 16 and r_arrow < 0.05 and r_red < 0.05:
-                        continue
-                
-                candidate_boxes.append((bx, by, bw, bh, color_name, radius))
+            
+            crop_r1 = cv2.inRange(crop_hsv, lower_red1, upper_red1)
+            crop_r2 = cv2.inRange(crop_hsv, lower_red2, upper_red2)
+            crop_rmask = cv2.bitwise_or(crop_r1, crop_r2)
+            crop_bmask = cv2.inRange(crop_hsv, lower_blue, upper_blue)
+            crop_white = ((crop_hsv[:, :, 1] < 70) & (crop_hsv[:, :, 2] > 140)).astype(np.uint8) * 255
+            crop_arrow = ((crop_hsv[:, :, 1] < 140) & (crop_hsv[:, :, 2] > 165)).astype(np.uint8) * 255
+            
+            r_red = cv2.countNonZero(crop_rmask) / tot_crop
+            r_blue = cv2.countNonZero(crop_bmask) / tot_crop
+            r_white = cv2.countNonZero(crop_white) / tot_crop
+            r_arrow = cv2.countNonZero(crop_arrow) / tot_crop
+            
+            if color_name == 'RED':
+                # Loai bo den tin hieu giao thong va dong ho dem giay
+                # Bien do that luon co ruot trang (P.102, P.123b) hoac ruot xanh (P.130, P.131)
+                if r_white < 0.08 and r_blue < 0.12:
+                    continue
+                if r_red > 0.68 and r_white < 0.10:
+                    continue
+            else: # BLUE
+                # Tat ca cac bien xanh that (R.302b hoac P.131) deu phai co mui ten trang hoac gach do
+                if r_arrow < 0.04 and r_red < 0.04:
+                    continue
+            
+            candidate_boxes.append((bx, by, bw, bh, color_name, radius))
     
     # Buoc 8: Non-Maximum Suppression (NMS) gop cac bounding box trung lap / long nhau
     merged_boxes = []
@@ -236,6 +258,114 @@ def detect_circular_traffic_signs(frame):
         merged_boxes.append((x1, y1, w1, h1))
         
     return merged_boxes
+
+# ==============================================================================
+# LOP THEO VET VA KHU NHAY KHUNG (TEMPORAL TRACKER & ANTI-FLICKER)
+# ==============================================================================
+class CleanSignTracker:
+    """
+    Bo loc theo vet kinh dien (Classical Multi-Object Tracker):
+    - Khong su dung bat ky mo hinh hoc sau nao (hoan toan dua tren IoU va khoang cach trong tam).
+    - Loai bo 100% hien tuong nhay khung (flickering): hop bao chi duoc hien thi khi xuat hien
+      toi thieu 2 khung hinh lien tiep (min_hits=2).
+    - Duy tri khung on dinh (max_misses=2) khi xe bi rung lac / dan xoc lam mo nhe 1-2 frame.
+    - Lam muot toa do bounding box (Spatial Smoothing) giup khung bao di chuyen em ai.
+    """
+    def __init__(self, min_hits=2, max_misses=2, iou_thresh=0.20):
+        self.min_hits = min_hits
+        self.max_misses = max_misses
+        self.iou_thresh = iou_thresh
+        self.tracks = []
+        self.next_id = 0
+
+    def _iou(self, b1, b2):
+        x1 = max(b1[0], b2[0])
+        y1 = max(b1[1], b2[1])
+        x2 = min(b1[0] + b1[2], b2[0] + b2[2])
+        y2 = min(b1[1] + b1[3], b2[1] + b2[3])
+        if x2 <= x1 or y2 <= y1:
+            return 0.0
+        inter = (x2 - x1) * (y2 - y1)
+        union = b1[2] * b1[3] + b2[2] * b2[3] - inter
+        return inter / float(union) if union > 0 else 0.0
+
+    def update(self, detections, is_sample_frame=False):
+        matched_tracks = set()
+        matched_dets = set()
+
+        for t_idx, t in enumerate(self.tracks):
+            best_score = 0.0
+            best_d_idx = -1
+            tb = t['box']
+            tcx, tcy = tb[0] + tb[2] / 2.0, tb[1] + tb[3] / 2.0
+
+            for d_idx, d in enumerate(detections):
+                if d_idx in matched_dets:
+                    continue
+                score = self._iou(tb, d)
+                dcx, dcy = d[0] + d[2] / 2.0, d[1] + d[3] / 2.0
+                dist = math.hypot(tcx - dcx, tcy - dcy)
+                max_dim = max(tb[2], tb[3], d[2], d[3])
+                
+                if score > self.iou_thresh or (dist < max_dim * 1.2 and score > 0.05):
+                    if score > best_score or best_d_idx == -1:
+                        best_score = score
+                        best_d_idx = d_idx
+
+            if best_d_idx >= 0:
+                matched_tracks.add(t_idx)
+                matched_dets.add(best_d_idx)
+                d = detections[best_d_idx]
+                alpha = 0.80
+                old_box = t['box']
+                new_box = (
+                    int(alpha * d[0] + (1 - alpha) * old_box[0]),
+                    int(alpha * d[1] + (1 - alpha) * old_box[1]),
+                    int(alpha * d[2] + (1 - alpha) * old_box[2]),
+                    int(alpha * d[3] + (1 - alpha) * old_box[3]),
+                )
+                t['vx'] = new_box[0] - old_box[0]
+                t['vy'] = new_box[1] - old_box[1]
+                t['box'] = new_box
+                t['hits'] += 1
+                t['misses'] = 0
+                if t['hits'] >= self.min_hits:
+                    t['confirmed'] = True
+
+        for t_idx, t in enumerate(self.tracks):
+            if t_idx not in matched_tracks:
+                t['misses'] += 1
+                if t['confirmed'] and t['misses'] <= self.max_misses:
+                    b = t['box']
+                    t['box'] = (b[0] + t.get('vx', 0), b[1] + t.get('vy', 0), b[2], b[3])
+
+        self.tracks = [t for t in self.tracks if t['misses'] <= self.max_misses]
+
+        for d_idx, d in enumerate(detections):
+            if d_idx not in matched_dets:
+                self.tracks.append({
+                    'id': self.next_id,
+                    'box': d,
+                    'hits': 1,
+                    'misses': 0,
+                    'confirmed': False,
+                    'vx': 0,
+                    'vy': 0
+                })
+                self.next_id += 1
+
+        confirmed_boxes = []
+        for t in self.tracks:
+            if t['confirmed'] and t['misses'] == 0:
+                confirmed_boxes.append(t['box'])
+
+        # Khi luu anh frame mau bao cao, dam bao lay tron ven ca nhung bien moi xuat hien
+        if is_sample_frame:
+            for d in detections:
+                if not any(self._iou(d, cb) > 0.20 for cb in confirmed_boxes):
+                    confirmed_boxes.append(d)
+
+        return confirmed_boxes
 
 # ==============================================================================
 # HAM VE BOUNDING BOX VA CHEN THONG TIN SINH VIEN LEN KHUNG HINH
@@ -298,6 +428,9 @@ def process_video_file(input_path, output_path, student_ids_text, sample_frame_i
     
     os.makedirs("report_frames", exist_ok=True)
     
+    # Khoi tao bo loc theo vet kinh dien (Anti-Flicker & Smoothing Tracker)
+    tracker = CleanSignTracker(min_hits=2, max_misses=2)
+    
     frame_idx = 0
     start_time = time.time()
     
@@ -306,14 +439,16 @@ def process_video_file(input_path, output_path, student_ids_text, sample_frame_i
         if not ret:
             break
             
-        boxes = detect_circular_traffic_signs(frame)
+        raw_boxes = detect_circular_traffic_signs(frame)
+        is_sample = bool(sample_frame_indices and frame_idx in sample_frame_indices)
+        boxes = tracker.update(raw_boxes, is_sample_frame=is_sample)
         annotated_frame = draw_annotations(frame, boxes, student_ids_text)
         
-        if sample_frame_indices and frame_idx in sample_frame_indices:
+        if is_sample:
             vid_base = os.path.splitext(os.path.basename(input_path))[0]
             sample_img_name = f"report_frames/{vid_base}_frame_{frame_idx:04d}.jpg"
             cv2.imwrite(sample_img_name, annotated_frame)
-            print(f"  -> Luu frame mau bao cao: {sample_img_name} (giay {frame_idx/fps:.1f}s)")
+            print(f"  -> Luu frame mau bao cao: {sample_img_name} (giay {frame_idx/fps:.1f}s) - Phat hien: {len(boxes)} bien")
             
         out.write(annotated_frame)
         
