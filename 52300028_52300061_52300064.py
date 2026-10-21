@@ -53,35 +53,38 @@ REPORT_SAMPLE_FRAMES = {
 # ==============================================================================
 def detect_circular_traffic_signs(frame):
     """
-    Nhan dien cac bien bao giao thong hinh tron tren mot khung hinh video.
-    Ap dung hoan toan cac ky thuat xu ly anh kinh dien:
-    1. Chuyen doi khong gian mau BGR sang HSV.
-    2. Phan doan mau sac (Mau Do voi 2 dai Hue va Mau Xanh Duong).
-    3. Phep toan hinh thai hoc (Morphological Closing) de ket noi vien va lap day vung khuyet.
-    4. Gioi han vung quan tam (ROI): Chi xet khu vuc giua va ben phai duong, do cao hop ly.
-    5. Trich xuat duong bao (Contours) va phan tich bao loi (Convex Hull).
-    6. Kiem tra do tron (Circularity) va ty le lap day duong tron ngoai tiep (Enclosing Circle Fit).
-    7. Kiem tra phan bo mau tren vanh khuyen (Annulus Ring Color Verification).
-    8. Non-Maximum Suppression (NMS) de loai bo cac box trung lap / long nhau.
+    Nhan dien tat ca cac bien bao giao thong hinh tron tren mot khung hinh video.
+    Ap dung hoan toan cac ky thuat xu ly anh kinh dien (Classical Computer Vision):
+    1. Chuyen doi he mau BGR sang HSV.
+    2. Phan doan mau sac (Color Segmentation) cho Mau Do va Mau Xanh Duong.
+    3. Phep toan hinh thai hoc (Morphological Closing) de han noi vien va lap day vung bien.
+    4. Gioi han khong gian (Spatial ROI): Dai phan cach giua va le duong ben phai (x >= 0.38*W, y <= 465).
+       Loai bo cac tang lau phia tren ben phai (x > 1200, y < 230) va mep bien khung hinh.
+    5. Loc hinh hoc duong tron (Circle Geometry):
+       - Convex Hull, dien tich bao loi (hull_area) va duong tron ngoai tiep nho nhat (minEnclosingCircle).
+       - Do dac (Solidity S / S_hull >= 0.70) de loai bo tan cay, cua so lam gio pagoda.
+       - Ty le lap day duong tron (fit_circle >= 0.62) va Do tron thuc su (hull_circ >= 0.90).
+       - Bounding box extent <= 0.88 de loai bo cac khoi chu nhat dac.
+    6. Kiem tra vanh khuyen (Annulus Ring Color Verification) ty le mau sac >= 0.22.
+    7. Phan biet noi dung mau sac ben trong (Internal Content Discrimination):
+       - Mau do: Loai bo den tin hieu giao thong va dong ho dem giay (r_red > 0.68 va thieu thanh ngang trang cua P.102).
+       - Mau xanh: Loai bo den giao thong xanh va cac mang mau xanh don sac (yeu cau mui ten trang cua R.302b hoac gach cheo do cua P.131).
+    8. Non-Maximum Suppression (NMS) gop cac bounding box trung lap hoac long nhau.
     """
     h_img, w_img = frame.shape[:2]
-    
-    # Buoc 1: Chuyen doi sang HSV
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
-    # Buoc 2: Phan doan mau sac (Color Segmentation)
-    # Mau do trong HSV bi chia thanh 2 dai: can 0 va can 180
-    lower_red1 = np.array([0, 70, 50])
+    # Buoc 1 & 2: Phan doan mau sac (Color Segmentation)
+    lower_red1 = np.array([0, 65, 50])
     upper_red1 = np.array([10, 255, 255])
-    lower_red2 = np.array([155, 70, 50])
+    lower_red2 = np.array([155, 65, 50])
     upper_red2 = np.array([180, 255, 255])
     mask_red = cv2.bitwise_or(
         cv2.inRange(hsv, lower_red1, upper_red1),
         cv2.inRange(hsv, lower_red2, upper_red2)
     )
     
-    # Mau xanh duong cua bien hieu lenh
-    lower_blue = np.array([100, 90, 50])
+    lower_blue = np.array([100, 75, 50])
     upper_blue = np.array([135, 255, 255])
     mask_blue = cv2.inRange(hsv, lower_blue, upper_blue)
     
@@ -92,34 +95,44 @@ def detect_circular_traffic_signs(frame):
     
     candidate_boxes = []
     
-    # Buoc 4 & 5: Duyet contours theo tung kenh mau
+    # Buoc 4 & 5: Duyet contours va phan tich dac trung hinh hoc
     for color_name, mask in [('RED', mask_red_closed), ('BLUE', mask_blue_closed)]:
         cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
         for c in cnts:
             bx, by, bw, bh = cv2.boundingRect(c)
             
-            # Loc vi tri: Chi xet bien bao o giua duong hoac ben phai (x >= 0.35 * w_img)
-            if bx < 0.35 * w_img:
+            # Loc vi tri: Bien bao nam o dai phan cach giua (x >= 0.38*W) hoac le phai
+            if bx < 0.38 * w_img or (bx + bw) > 1910:
                 continue
                 
-            # Loc cao do: Bien bao tren cot/gia long mon, khong nam tren mat duong nhua
-            max_allowed_y = 520 if (bw >= 50 or bh >= 50) else 440
-            if by < 25 or by > max_allowed_y:
+            # Loc do cao: Bien bao gan tren cot hoac gia long mon
+            if by < 65 or (by + bh) > 465:
                 continue
                 
-            # Loc kich thuoc co ban
-            if bw < 18 or bh < 18 or bw > 450 or bh > 450:
+            # Loc tang lau cao oc phia ben phai (cac bien bao ben phai deu nam o by >= 230)
+            if bx > 1200 and by < 230:
                 continue
                 
-            # Loc ty le khung bao (bien hinh tron thi w / h ~ 1.0)
+            # Loc kich thuoc vat the
+            if bw < 18 or bh < 18 or bw > 95 or bh > 95:
+                continue
+                
+            # Loc ty le khung bao (bien tron co ty le w / h gan bang 1.0)
             aspect_ratio = bw / float(bh)
-            if not (0.70 <= aspect_ratio <= 1.40):
+            if not (0.65 <= aspect_ratio <= 1.45):
                 continue
                 
-            # Tinh bao loi va duong tron ngoai tiep nho nhat
+            c_area = cv2.contourArea(c)
             hull = cv2.convexHull(c)
             hull_area = cv2.contourArea(hull)
+            if hull_area <= 0:
+                continue
+                
+            # Kiem tra do dac (Solidity S / S_hull >= 0.70) de loai bo tan cay va cua so nan go
+            solidity = c_area / float(hull_area)
+            if solidity < 0.70:
+                continue
+                
             (cx, cy), radius = cv2.minEnclosingCircle(hull)
             circle_area = math.pi * (radius ** 2)
             if circle_area <= 0:
@@ -129,15 +142,15 @@ def detect_circular_traffic_signs(frame):
             perimeter = cv2.arcLength(hull, True)
             if perimeter <= 0:
                 continue
-            circularity = 4.0 * math.pi * hull_area / (perimeter ** 2)
+            hull_circ = 4.0 * math.pi * hull_area / (perimeter ** 2)
             
-            # Nguong do tron (phu hop voi ca bien xa va gan)
-            min_fit = 0.68 if radius < 20 else 0.75
-            min_circ = 0.78 if radius < 20 else 0.84
-            
-            if fit_circle >= min_fit and circularity >= min_circ:
-                # Buoc 6: Kiem tra vanh khuyen (Annulus Ring Color Verification)
-                # Bien bao hinh tron co phan vien ngoai dac trung boi mau sac chu dao
+            # Loai bo cac khoi chu nhat dac
+            extent = c_area / float(bw * bh)
+            if extent > 0.88:
+                continue
+                
+            # Kiem tra do tron thuc su: tat ca 24 bien bao chuan deu thoa man hull_circ >= 0.90
+            if fit_circle >= 0.62 and hull_circ >= 0.90:
                 rx = int(radius)
                 icx = int(cx)
                 icy = int(cy)
@@ -147,22 +160,48 @@ def detect_circular_traffic_signs(frame):
                 y_max = min(h_img, icy + rx + 1)
                 
                 sub_mask = mask[y_min:y_max, x_min:x_max]
+                
+                # 6. Kiem tra vanh khuyen (Annulus Ring Color Verification)
                 ring = np.zeros(sub_mask.shape, dtype=np.uint8)
                 cv2.circle(ring, (icx - x_min, icy - y_min), rx, 255, -1)
                 cv2.circle(ring, (icx - x_min, icy - y_min), int(0.60 * rx), 0, -1)
                 
                 ring_pixels = cv2.countNonZero(ring)
-                if ring_pixels > 0:
-                    overlap = cv2.countNonZero(cv2.bitwise_and(sub_mask, ring))
-                    color_ratio = overlap / float(ring_pixels)
-                else:
-                    color_ratio = 0.0
-                    
-                # Chap nhan ung vien neu ty le mau tren vien du cao
-                if color_ratio >= 0.28:
-                    candidate_boxes.append((bx, by, bw, bh, color_name, radius))
+                if ring_pixels == 0:
+                    continue
+                ring_color_ratio = cv2.countNonZero(cv2.bitwise_and(sub_mask, ring)) / float(ring_pixels)
+                if ring_color_ratio < 0.22:
+                    continue
+                
+                # 7. Phan biet noi dung mau sac ben trong (Internal Content Discrimination)
+                tot_crop = float(bw * bh)
+                crop_hsv = hsv[by:by+bh, bx:bx+bw]
+                crop_r1 = cv2.inRange(crop_hsv, lower_red1, upper_red1)
+                crop_r2 = cv2.inRange(crop_hsv, lower_red2, upper_red2)
+                crop_rmask = cv2.bitwise_or(crop_r1, crop_r2)
+                crop_bmask = cv2.inRange(crop_hsv, lower_blue, upper_blue)
+                crop_white = ((crop_hsv[:, :, 1] < 70) & (crop_hsv[:, :, 2] > 120)).astype(np.uint8) * 255
+                crop_arrow = ((crop_hsv[:, :, 1] < 140) & (crop_hsv[:, :, 2] > 165)).astype(np.uint8) * 255
+                
+                r_red = cv2.countNonZero(crop_rmask) / tot_crop
+                r_blue = cv2.countNonZero(crop_bmask) / tot_crop
+                r_white = cv2.countNonZero(crop_white) / tot_crop
+                r_arrow = cv2.countNonZero(crop_arrow) / tot_crop
+                
+                if color_name == 'RED':
+                    # Loai bo den tin hieu giao thong va dong ho dem giay
+                    if r_red > 0.68 and r_white < 0.10:
+                        continue
+                    if r_white < 0.04 and r_blue < 0.10:
+                        continue
+                else: # BLUE
+                    # Bien bao hieu lenh R.302b co mui ten trang, bien P.131 co gach cheo do
+                    if radius >= 16 and r_arrow < 0.05 and r_red < 0.05:
+                        continue
+                
+                candidate_boxes.append((bx, by, bw, bh, color_name, radius))
     
-    # Buoc 7: Non-Maximum Suppression (NMS) gop cac bounding box trung lap
+    # Buoc 8: Non-Maximum Suppression (NMS) gop cac bounding box trung lap / long nhau
     merged_boxes = []
     used = [False] * len(candidate_boxes)
     for i in range(len(candidate_boxes)):
@@ -174,7 +213,7 @@ def detect_circular_traffic_signs(frame):
                 continue
             x2, y2, w2, h2, c2, r2 = candidate_boxes[j]
             
-            # Tinh giao nhau IoU
+            # Tinh giao nhau IoU va overlap
             ix1 = max(x1, x2)
             iy1 = max(y1, y2)
             ix2 = min(x1 + w1, x2 + w2)
@@ -187,8 +226,7 @@ def detect_circular_traffic_signs(frame):
                 min_box_area = min(w1 * h1, w2 * h2)
                 overlap_ratio = inter_area / float(min_box_area) if min_box_area > 0 else 0
                 
-                # Neu hai hop giao nhau nhieu (IoU > 0.25 hoac mot hop long trong hop kia)
-                if iou > 0.25 or overlap_ratio > 0.50:
+                if iou > 0.20 or overlap_ratio > 0.45:
                     used[j] = True
                     x1 = min(x1, x2)
                     y1 = min(y1, y2)
