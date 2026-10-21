@@ -115,6 +115,10 @@ def detect_circular_traffic_signs(frame):
             if bx > 1100 and by < 220:
                 continue
                 
+            # Loc mat duong le phai: bien bao that treo tren cot cao (by <= 405), khong nam sat via he (by > 410)
+            if bx > 1200 and by > 410:
+                continue
+                
             # O sat mep phai x > 1350, bien bao that deu o rat gan xe (kich thuoc >= 30)
             # Loai bo tat ca cac cua so, ban cong, tan la nho o x > 1350
             if bx > 1350 and (bw < 30 or bh < 30):
@@ -126,7 +130,7 @@ def detect_circular_traffic_signs(frame):
                 
             # Loc ty le khung bao (bien tron co ty le w / h gan bang 1.0)
             aspect_ratio = bw / float(bh)
-            if not (0.65 <= aspect_ratio <= 1.45):
+            if not (0.70 <= aspect_ratio <= 1.35):
                 continue
                 
             c_area = cv2.contourArea(c)
@@ -135,9 +139,9 @@ def detect_circular_traffic_signs(frame):
             if hull_area <= 0:
                 continue
                 
-            # Kiem tra do dac (Solidity S / S_hull >= 0.70) de loai bo tan cay va cua so nan go
+            # Kiem tra do dac (Solidity S / S_hull >= 0.74) de loai bo tan cay va cua so nan go
             solidity = c_area / float(hull_area)
-            if solidity < 0.70:
+            if solidity < 0.74:
                 continue
                 
             (cx, cy), radius = cv2.minEnclosingCircle(hull)
@@ -153,11 +157,27 @@ def detect_circular_traffic_signs(frame):
             
             # Loai bo cac khoi chu nhat dac
             extent = c_area / float(bw * bh)
-            if extent > 0.88:
+            if extent > 0.85:
                 continue
                 
             # Kiem tra do tron thuc su
-            if not (fit_circle >= 0.60 and hull_circ >= 0.88):
+            if not (fit_circle >= 0.58 and hull_circ >= 0.88):
+                continue
+                
+            # Kiem tra do chiem cho 4 goc (Corner Occupancy Test):
+            # Hinh tron noi tiep hinh chu nhat co 4 goc hoan toan trong rong.
+            # Cac bien bao hinh vuong / chu nhat (nhu bien chi dan, bang hieu) va cua so se bi loai bo triet de.
+            poly = np.zeros((bh, bw), dtype=np.uint8)
+            cv2.drawContours(poly, [c - [bx, by]], -1, 255, -1)
+            cw_corner = max(2, int(0.18 * bw))
+            ch_corner = max(2, int(0.18 * bh))
+            tl = np.mean(poly[:ch_corner, :cw_corner] > 0)
+            tr = np.mean(poly[:ch_corner, -cw_corner:] > 0)
+            bl = np.mean(poly[-ch_corner:, :cw_corner] > 0)
+            br = np.mean(poly[-ch_corner:, -cw_corner:] > 0)
+            corner_mean = (tl + tr + bl + br) / 4.0
+            corner_max = max(tl, tr, bl, br)
+            if corner_mean > 0.22 or corner_max > 0.65:
                 continue
                 
             rx = int(radius)
@@ -183,7 +203,7 @@ def detect_circular_traffic_signs(frame):
                 continue
             
             # 7. Phan biet noi dung mau sac ben trong (Internal Content Discrimination)
-            tot_crop = float(bw * bh)
+            crop_bgr = frame[by:by+bh, bx:bx+bw]
             crop_hsv = hsv[by:by+bh, bx:bx+bw]
             
             # Kiem tra do bao hoa mau (Saturation)
@@ -191,7 +211,16 @@ def detect_circular_traffic_signs(frame):
             mean_s = np.mean(crop_hsv[:, :, 1])
             
             if color_name == 'BLUE':
-                if max_s < 155 or mean_s < 88:
+                if max_s < 155 or mean_s < 90:
+                    continue
+                # Do vuot troi cua mau xanh (Blue Dominance B > R) loai bo cua kinh, tuong bong va bien quang cao toi mau
+                bmask_crop = mask_blue_closed[by:by+bh, bx:bx+bw]
+                b_pix = crop_bgr[bmask_crop > 0]
+                if len(b_pix) == 0:
+                    continue
+                mean_b = np.mean(b_pix[:, 0])
+                mean_r = np.mean(b_pix[:, 2])
+                if mean_b < 125 or (mean_b - mean_r) < 60:
                     continue
             if color_name == 'RED':
                 if max_s < 145:
@@ -204,21 +233,46 @@ def detect_circular_traffic_signs(frame):
             crop_white = ((crop_hsv[:, :, 1] < 70) & (crop_hsv[:, :, 2] > 140)).astype(np.uint8) * 255
             crop_arrow = ((crop_hsv[:, :, 1] < 140) & (crop_hsv[:, :, 2] > 165)).astype(np.uint8) * 255
             
-            r_red = cv2.countNonZero(crop_rmask) / tot_crop
-            r_blue = cv2.countNonZero(crop_bmask) / tot_crop
-            r_white = cv2.countNonZero(crop_white) / tot_crop
-            r_arrow = cv2.countNonZero(crop_arrow) / tot_crop
+            # Kiem tra vung loi ben trong duong tron (Inner Core Disc r <= 0.55 * radius)
+            # Giup loai bo hoan toan cac mang do don sac nhu la co, bang ron, den long va den tin hieu
+            ch_c, cw_c = crop_hsv.shape[:2]
+            Y, X = np.ogrid[:ch_c, :cw_c]
+            r_inner = max(2, int(0.55 * radius))
+            inner_mask = ((X - (icx - bx))**2 + (Y - (icy - by))**2) <= (r_inner ** 2)
+            in_pts = float(np.sum(inner_mask))
+            if in_pts <= 0:
+                continue
+                
+            r_red_core = np.sum((crop_rmask > 0) & inner_mask) / in_pts
+            r_blue_core = np.sum((crop_bmask > 0) & inner_mask) / in_pts
+            r_white_core = np.sum((crop_white > 0) & inner_mask) / in_pts
+            r_arrow_core = np.sum((crop_arrow > 0) & inner_mask) / in_pts
             
             if color_name == 'RED':
-                # Loai bo den tin hieu giao thong va dong ho dem giay
-                # Bien do that luon co ruot trang (P.102, P.123b) hoac ruot xanh (P.130, P.131)
-                if r_white < 0.08 and r_blue < 0.12:
+                # Bien do that luon co ruot trang (P.101, P.102, P.123b, P.127) hoac ruot xanh (P.130, P.131)
+                # Loai bo la co, den giao thong, den long (ruot do dac khong co ca trang lan xanh)
+                if r_red_core > 0.80:
                     continue
-                if r_red > 0.68 and r_white < 0.10:
+                if r_white_core < 0.05 and r_blue_core < 0.08:
                     continue
             else: # BLUE
-                # Tat ca cac bien xanh that (R.302b hoac P.131) deu phai co mui ten trang hoac gach do
-                if r_arrow < 0.04 and r_red < 0.04:
+                # Tat ca cac bien xanh that (R.302b hoac P.130/P.131) deu phai co mui ten trang hoac gach cheo do
+                tot_crop = float(bw * bh)
+                r_red = cv2.countNonZero(crop_rmask) / tot_crop
+                is_p130_p131 = (r_red >= 0.035 or r_red_core >= 0.035)
+                
+                tot_w = cv2.countNonZero(crop_arrow)
+                if tot_w > 0:
+                    q_cx, q_cy = bw // 2, bh // 2
+                    q_tl = cv2.countNonZero(crop_arrow[:q_cy, :q_cx])
+                    q_tr = cv2.countNonZero(crop_arrow[:q_cy, q_cx:])
+                    q_bl = cv2.countNonZero(crop_arrow[q_cy:, :q_cx])
+                    q_br = cv2.countNonZero(crop_arrow[q_cy:, q_cx:])
+                    is_r302b = (tot_w >= 0.03 * tot_crop) and (q_tl >= 0.12 * tot_w) and (q_br >= 0.18 * tot_w) and ((q_tl + q_br) >= (q_tr + q_bl)) and ((q_tr + q_br) >= 0.30 * tot_w)
+                else:
+                    is_r302b = False
+                    
+                if not (is_p130_p131 or is_r302b):
                     continue
             
             candidate_boxes.append((bx, by, bw, bh, color_name, radius))
@@ -289,7 +343,7 @@ class CleanSignTracker:
         union = b1[2] * b1[3] + b2[2] * b2[3] - inter
         return inter / float(union) if union > 0 else 0.0
 
-    def update(self, detections, is_sample_frame=False):
+    def update(self, detections):
         matched_tracks = set()
         matched_dets = set()
 
@@ -358,12 +412,6 @@ class CleanSignTracker:
         for t in self.tracks:
             if t['confirmed'] and t['misses'] == 0:
                 confirmed_boxes.append(t['box'])
-
-        # Khi luu anh frame mau bao cao, dam bao lay tron ven ca nhung bien moi xuat hien
-        if is_sample_frame:
-            for d in detections:
-                if not any(self._iou(d, cb) > 0.20 for cb in confirmed_boxes):
-                    confirmed_boxes.append(d)
 
         return confirmed_boxes
 
@@ -441,7 +489,7 @@ def process_video_file(input_path, output_path, student_ids_text, sample_frame_i
             
         raw_boxes = detect_circular_traffic_signs(frame)
         is_sample = bool(sample_frame_indices and frame_idx in sample_frame_indices)
-        boxes = tracker.update(raw_boxes, is_sample_frame=is_sample)
+        boxes = tracker.update(raw_boxes)
         annotated_frame = draw_annotations(frame, boxes, student_ids_text)
         
         if is_sample:
