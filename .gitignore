@@ -1,5 +1,6 @@
 # Output directory (khong push thu muc output len git)
 output/
+test/
 
 # Video & Media files (kich thuoc lon vuot qua gioi han 100MB cua GitHub)
 *.mp4
