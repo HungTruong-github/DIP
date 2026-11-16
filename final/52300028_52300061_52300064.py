@@ -51,7 +51,7 @@ INPUT_VIDEOS = [
 # giua duong + ben phai (x >= 35% chieu rong), bo bau troi va mat duong sat dau xe.
 ROI_X_MIN = 0.35
 ROI_Y_MIN = 0.055
-ROI_Y_MAX = 0.44
+ROI_Y_MAX = 0.49
 
 POSITION_RULES = False  # luat vi tri tuyet doi ke thua tu bai giua ky (xem bao cao)
 MIN_SIZE = 16          # kich thuoc toi thieu cua bien bao (pixel)
@@ -67,22 +67,26 @@ def build_masks(roi_bgr):
     hsv = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV)
 
     red = cv2.bitwise_or(
-        cv2.inRange(hsv, (0, 70, 50), (10, 255, 255)),
-        cv2.inRange(hsv, (155, 70, 50), (180, 255, 255)))
-    blue = cv2.inRange(hsv, (100, 90, 50), (135, 255, 255))
-    blue_strong = cv2.inRange(hsv, (100, 120, 90), (130, 255, 255))   # xanh du sang, loai bong toi
+        cv2.inRange(hsv, (0, 55, 45), (10, 255, 255)),
+        cv2.inRange(hsv, (150, 55, 45), (180, 255, 255)))
+    blue_raw = cv2.inRange(hsv, (100, 75, 50), (135, 255, 255))
+    b_ch = roi_bgr[..., 0].astype(int)
+    r_ch = roi_bgr[..., 2].astype(int)
+    blue_dom = ((b_ch - r_ch >= 58) & (b_ch >= 115) & (hsv[..., 1] >= 110)).astype(np.uint8) * 255
+    blue = cv2.bitwise_and(blue_raw, blue_dom)
+    blue_strong = cv2.inRange(hsv, (100, 115, 80), (130, 255, 255))   # xanh du sang, loai bong toi
     yellow = cv2.inRange(hsv, (15, 90, 110), (35, 255, 255))
     white = cv2.inRange(hsv, (0, 0, 110), (180, 70, 255))
     dark = cv2.inRange(hsv, (0, 0, 0), (180, 255, 90))
     bright = cv2.inRange(hsv, (0, 0, 120), (180, 255, 255))
 
-    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    red_c = cv2.morphologyEx(red, cv2.MORPH_CLOSE, k, iterations=2)
-    blue_c = cv2.morphologyEx(blue, cv2.MORPH_CLOSE, k, iterations=2)
-    # Phep MO (opening) cat roi cot/than bien dinh vao dia xanh de contour tron hon
     k7 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    blue_o = cv2.morphologyEx(blue_c, cv2.MORPH_OPEN, k7)
+    red_c = cv2.morphologyEx(red, cv2.MORPH_CLOSE, k7, iterations=1)
+    k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    blue_o = cv2.morphologyEx(blue, cv2.MORPH_OPEN, k5)
+    blue_c = cv2.morphologyEx(blue_o, cv2.MORPH_CLOSE, k5)
     # Bien tam giac: vien do + nen vang -> gop lai thanh mot khoi dac
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     warn = cv2.bitwise_or(red, yellow)
     warn_c = cv2.morphologyEx(warn, cv2.MORPH_CLOSE, k, iterations=2)
     return {
@@ -180,7 +184,9 @@ def find_rect_candidates(masks):
         if w < 20 or h < 20 or w > MAX_SIZE or h > MAX_SIZE:
             continue
         ar = w / float(h)
-        if not (0.55 <= ar <= 2.6):
+        if not (1.15 <= ar <= 2.8):
+            continue
+        if w < 50 or h < 30:
             continue
         area = cv2.contourArea(c)
         if area / float(w * h) < 0.80:   # hinh chu nhat lap day bbox
@@ -418,9 +424,9 @@ def detect_circle_boxes(frame):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
     # Buoc 1 & 2: Phan doan mau sac (Color Segmentation)
-    lower_red1 = np.array([0, 65, 50])
+    lower_red1 = np.array([0, 55, 45])
     upper_red1 = np.array([10, 255, 255])
-    lower_red2 = np.array([155, 65, 50])
+    lower_red2 = np.array([150, 55, 45])
     upper_red2 = np.array([180, 255, 255])
     mask_red = cv2.bitwise_or(
         cv2.inRange(hsv, lower_red1, upper_red1),
@@ -429,12 +435,18 @@ def detect_circle_boxes(frame):
     
     lower_blue = np.array([100, 75, 50])
     upper_blue = np.array([135, 255, 255])
-    mask_blue = cv2.inRange(hsv, lower_blue, upper_blue)
+    mask_blue_raw = cv2.inRange(hsv, lower_blue, upper_blue)
+    b_ch = frame[..., 0].astype(int)
+    r_ch = frame[..., 2].astype(int)
+    blue_dom = ((b_ch - r_ch >= 58) & (b_ch >= 115) & (hsv[..., 1] >= 110)).astype(np.uint8) * 255
+    mask_blue = cv2.bitwise_and(mask_blue_raw, blue_dom)
     
-    # Buoc 3: Phep toan hinh thai hoc Morphological Closing
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    mask_red_closed = cv2.morphologyEx(mask_red, cv2.MORPH_CLOSE, kernel, iterations=2)
-    mask_blue_closed = cv2.morphologyEx(mask_blue, cv2.MORPH_CLOSE, kernel, iterations=2)
+    # Buoc 3: Phep toan hinh thai hoc Morphological Closing / Opening
+    k7 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    mask_red_closed = cv2.morphologyEx(mask_red, cv2.MORPH_CLOSE, k7, iterations=1)
+    k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    mask_blue_opened = cv2.morphologyEx(mask_blue, cv2.MORPH_OPEN, k5)
+    mask_blue_closed = cv2.morphologyEx(mask_blue_opened, cv2.MORPH_CLOSE, k5)
     
     candidate_boxes = []
     
@@ -449,7 +461,7 @@ def detect_circle_boxes(frame):
                 continue
                 
             # Loc do cao: Bien bao gan tren cot hoac gia long mon
-            if by < 65 * sy or (by + bh) > 465 * sy:
+            if by < 65 * sy or (by + bh) > 505 * sy:
                 continue
                 
             # Loc tang lau cao oc phia ben phai (cac bien bao ben phai deu nam o by >= 220)
@@ -480,9 +492,9 @@ def detect_circle_boxes(frame):
             if hull_area <= 0:
                 continue
                 
-            # Kiem tra do dac (Solidity S / S_hull >= 0.74) de loai bo tan cay va cua so nan go
+            # Kiem tra do dac (Solidity S / S_hull >= 0.70) de loai bo tan cay va cua so nan go
             solidity = c_area / float(hull_area)
-            if solidity < 0.74:
+            if solidity < 0.70:
                 continue
                 
             (cx, cy), radius = cv2.minEnclosingCircle(hull)
@@ -502,7 +514,7 @@ def detect_circle_boxes(frame):
                 continue
                 
             # Kiem tra do tron thuc su
-            if not (fit_circle >= 0.58 and hull_circ >= 0.88):
+            if not (fit_circle >= 0.58 and hull_circ >= 0.82):
                 continue
                 
             # Kiem tra do chiem cho 4 goc (Corner Occupancy Test):
@@ -542,6 +554,23 @@ def detect_circle_boxes(frame):
             ring_color_ratio = cv2.countNonZero(cv2.bitwise_and(sub_mask, ring)) / float(ring_pixels)
             if ring_color_ratio < 0.22:
                 continue
+                
+            if color_name == 'BLUE':
+                r_exp = int(1.35 * radius)
+                x_min_e, x_max_e = max(0, icx - r_exp), min(w_img, icx + r_exp + 1)
+                y_min_e, y_max_e = max(0, icy - r_exp), min(h_img, icy + r_exp + 1)
+                sub_red = mask_red[y_min_e:y_max_e, x_min_e:x_max_e]
+                ring_outer = np.zeros(sub_red.shape, dtype=np.uint8)
+                cv2.circle(ring_outer, (icx - x_min_e, icy - y_min_e), r_exp, 255, -1)
+                cv2.circle(ring_outer, (icx - x_min_e, icy - y_min_e), int(0.85 * radius), 0, -1)
+                outer_pts = cv2.countNonZero(ring_outer)
+                red_ratio_outer = cv2.countNonZero(cv2.bitwise_and(sub_red, ring_outer)) / float(outer_pts) if outer_pts > 0 else 0
+                if red_ratio_outer >= 0.15:
+                    bx = max(0, icx - r_exp)
+                    by = max(0, icy - r_exp)
+                    bw = min(w_img - bx, 2 * r_exp)
+                    bh = min(h_img - by, 2 * r_exp)
+                    color_name = 'RED'
             
             # 7. Phan biet noi dung mau sac ben trong (Internal Content Discrimination)
             crop_bgr = frame[by:by+bh, bx:bx+bw]
@@ -561,10 +590,10 @@ def detect_circle_boxes(frame):
                     continue
                 mean_b = np.mean(b_pix[:, 0])
                 mean_r = np.mean(b_pix[:, 2])
-                if mean_b < 125 or (mean_b - mean_r) < 60:
+                if mean_b < 105 or (mean_b - mean_r) < 45:
                     continue
             if color_name == 'RED':
-                if max_s < 145:
+                if max_s < 110:
                     continue
             
             crop_r1 = cv2.inRange(crop_hsv, lower_red1, upper_red1)
@@ -613,7 +642,8 @@ def detect_circle_boxes(frame):
                 else:
                     is_r302b = False
                     
-                if not (is_p130_p131 or is_r302b):
+                is_blue_valid = is_p130_p131 or is_r302b or (tot_w >= 0.025 * tot_crop) or (r_white_core >= 0.04)
+                if not is_blue_valid:
                     continue
             
             candidate_boxes.append((bx, by, bw, bh, color_name, radius))
@@ -665,7 +695,7 @@ def detect_signs(frame):
     # Bien TRON: dung bo loc da tinh chinh tu bai giua ky (toa do tren anh goc -> doi sang toa do ROI)
     circles = [(bx - x0, by - y0, bw, bh) for (bx, by, bw, bh) in detect_circle_boxes(frame)]
     tris = [b for b in merge_boxes(find_triangle_candidates(masks)) if b[0] + x0 >= 0.38 * W]
-    rects = [b for b in merge_boxes(find_rect_candidates(masks)) if b[0] + x0 >= 0.38 * W]
+    rects = [b for b in merge_boxes(find_rect_candidates(masks)) if b[0] + x0 >= 0.38 * W and (b[1] + y0 + b[3]) <= 340 * (H / 1080.0)]
 
     items = []
     for b in circles:
@@ -703,11 +733,7 @@ def detect_signs(frame):
             label = classify_triangle(roi, masks, box)
         else:
             label = classify_rect(roi, masks, box)
-        if label is None and kind == 'circle':
-            # Bo loc giua ky da xac nhan day la bien tron nhung chua doc duoc noi dung -> nhan chung theo mau
-            sb = {k: v[by:by + bh, bx:bx + bw] for k, v in masks.items() if k in ('red', 'blue')}
-            label = 'Bien cam' if cv2.countNonZero(sb['red']) >= cv2.countNonZero(sb['blue']) else 'Bien hieu lenh'
-        if label is None:          # hinh dang giong bien nhung noi dung khong hop le -> bo
+        if label is None:          # hinh dang giong bien nhung noi dung khong hop le -> bo (loai bo ang ten, tru dien, poster)
             continue
         if kind == 'circle' and label in ('Cam di nguoc chieu', 'Bien cam', 'Cam re trai', 'Cam re phai'):
             # Vanh NGOAI bien: neu xung quanh la mang xanh lon (nam tren bang xanh) hoac
@@ -1001,6 +1027,7 @@ def main():
     print("NHAN DIEN VA SUY LUAN NOI DUNG BIEN BAO GIAO THONG - BAI THI CUOI KY")
     print(f"Nhom sinh vien: {STUDENT_IDS}")
     print("=" * 70)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     for src, dst in INPUT_VIDEOS:
         process_video_file(src, dst, STUDENT_IDS)
     print("HOAN TAT.")
