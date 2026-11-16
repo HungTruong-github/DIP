@@ -175,28 +175,28 @@ def find_triangle_candidates(masks):
 # ==============================================================================
 # BUOC 5: UNG VIEN HINH CHU NHAT XANH (bien chi dan)
 # ==============================================================================
-def find_rect_candidates(masks):
+def find_rect_candidates(masks, roi_bgr):
     cands = []
-    mask = masks['blue_o']
+    mask = masks['blue_c']
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    hsv_roi = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV)
     for c in cnts:
         x, y, w, h = cv2.boundingRect(c)
-        if w < 20 or h < 20 or w > MAX_SIZE or h > MAX_SIZE:
+        if w < 40 or h < 25 or w > MAX_SIZE or h > MAX_SIZE:
             continue
         ar = w / float(h)
-        if not (1.15 <= ar <= 2.8):
-            continue
-        if w < 50 or h < 30:
+        if not (1.20 <= ar <= 2.80):
             continue
         area = cv2.contourArea(c)
-        if area / float(w * h) < 0.80:   # hinh chu nhat lap day bbox
+        if area / float(w * h) < 0.70:   # hinh chu nhat lap day bbox
             continue
         circ, fit, _, _ = circle_geometry(c)
         if circ > 0.84 and fit > 0.75:    # la hinh tron -> khong phai
             continue
-        # Co chu / hinh ve mau trang ben trong
-        wr = cv2.countNonZero(masks['white'][y:y + h, x:x + w]) / float(w * h)
-        if wr < 0.04 or wr > 0.60:
+        # Co chu / hinh ve mau trang ben trong (S < 110 de bat duoc hoa van trang bi nhoe vao nen xanh)
+        crop_hsv = hsv_roi[y:y + h, x:x + w]
+        wr = np.sum((crop_hsv[..., 1] < 110) & (crop_hsv[..., 2] > 110)) / float(w * h)
+        if wr < 0.04 or wr > 0.65:
             continue
         cands.append((x, y, w, h))
     return cands
@@ -695,7 +695,7 @@ def detect_signs(frame):
     # Bien TRON: dung bo loc da tinh chinh tu bai giua ky (toa do tren anh goc -> doi sang toa do ROI)
     circles = [(bx - x0, by - y0, bw, bh) for (bx, by, bw, bh) in detect_circle_boxes(frame)]
     tris = [b for b in merge_boxes(find_triangle_candidates(masks)) if b[0] + x0 >= 0.38 * W]
-    rects = [b for b in merge_boxes(find_rect_candidates(masks)) if b[0] + x0 >= 0.38 * W and (b[1] + y0 + b[3]) <= 340 * (H / 1080.0)]
+    rects = [b for b in merge_boxes(find_rect_candidates(masks, roi)) if b[0] + x0 >= 0.38 * W and (b[1] + y0 + b[3]) <= 460 * (H / 1080.0)]
 
     items = []
     for b in circles:
@@ -874,7 +874,10 @@ def finalize_tracks(tracks, n_frames):
         fs = sorted(t['frames'])
         t['label'] = vote_label(t)
         span = fs[-1] - fs[0] + 1
-        if len(fs) < min_track_frames(t['label']) or len(fs) / float(span) < 0.4:
+        min_f = min_track_frames(t['label'])
+        if fs[0] <= 5 or fs[-1] >= n_frames - 10:
+            min_f = min(min_f, 15)
+        if len(fs) < min_f or len(fs) / float(span) < 0.4:
             continue
         # Noi suy tuyen tinh cac frame bi hut
         full = np.arange(fs[0], fs[-1] + 1)
