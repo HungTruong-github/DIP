@@ -1,41 +1,37 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
+# Output directory (khong push thu muc output len git)
+output/
+test/
 
-# Large media files (exceeds GitHub limits; hosted on Google Drive as per submission guidelines)
+# Video & Media files (kich thuoc lon vuot qua gioi han 100MB cua GitHub)
 *.mp4
 *.avi
 *.mov
 *.mkv
 
-# Temporary frame extraction folders and scratch assets
-temp_sample_frames/
-temp_v1_frames/
-temp_v2_frames/
-report_frames/
-scratch/
+# Python cache & bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
 
-# Scratch scripts and utility scripts
-test_tracks.py
-fast_test_tracks.py
-create_report.py
-
-# Assignment prompt documents and course template
-Essay_DIP.pdf
-Rubric_DIP.pdf
-Guideline DIP.docx
-Template_VN.docx
-
-# Office temporary and source documents (official submission requires PDF)
-*.docx
-~$*.docx
-
-# Environment and IDE settings
-.vscode/
-.idea/
-.env
+# Virtual Environment
 .venv/
 env/
-Thumbs.db
+venv/
+ENV/
+
+# IDE & Editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary & OS files
 .DS_Store
+Thumbs.db
+~$*.docx
+~$*.dotx
+temp_*/
+scratch/
+
